@@ -88,15 +88,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const clearConsoleButton = document.getElementById('clear-console-btn');
 
     const prompt = 'C:\\CPlusPlus>';
-
-    // JSCPP는 브라우저에서 C++를 실행하는 JavaScript 인터프리터입니다.
-    // CDN 하나가 막혀도 다음 CDN으로 자동 전환하도록 구성합니다.
-    const JSCPP_SOURCES = [
-        'https://unpkg.com/JSCPP@2.0.9/dist/JSCPP.es5.min.js',
-        'https://cdn.jsdelivr.net/npm/JSCPP@2.0.9/dist/JSCPP.es5.min.js',
-        'https://raw.githubusercontent.com/felixhao28/JSCPP/gh-pages/dist/JSCPP.es5.min.js'
-    ];
-
+    const LOCAL_ENGINE_SOURCE = 'vendor/JSCPP.es5.min.js';
     let enginePromise = null;
 
     const setConsoleHtml = html => {
@@ -133,14 +125,22 @@ document.addEventListener('DOMContentLoaded', () => {
         runButton.classList.toggle('hover:bg-green-500', !running);
     };
 
-    const loadScript = src => new Promise((resolve, reject) => {
+    const loadLocalScript = src => new Promise((resolve, reject) => {
+        const existing = document.querySelector(`script[data-cpp-engine="${src}"]`);
+        if (existing) {
+            if (window.JSCPP && typeof window.JSCPP.run === 'function') {
+                resolve();
+                return;
+            }
+        }
+
         const script = document.createElement('script');
         script.src = src;
-        // 순서를 보장해 CDN fallback이 안정적으로 동작하게 합니다.
+        script.dataset.cppEngine = src;
         script.async = false;
         script.defer = false;
         script.onload = () => resolve();
-        script.onerror = () => reject(new Error(`엔진 파일 로드 실패: ${src}`));
+        script.onerror = () => reject(new Error(`로컬 엔진 파일을 불러오지 못했습니다: ${src}`));
         document.head.appendChild(script);
     });
 
@@ -149,24 +149,19 @@ document.addEventListener('DOMContentLoaded', () => {
         if (enginePromise) return enginePromise;
 
         enginePromise = (async () => {
-            const failedSources = [];
-
-            for (const source of JSCPP_SOURCES) {
-                try {
-                    await loadScript(source);
-                    if (window.JSCPP && typeof window.JSCPP.run === 'function') {
-                        return window.JSCPP;
-                    }
-                    failedSources.push(`${source} (JSCPP 전역 객체 없음)`);
-                } catch (error) {
-                    failedSources.push(error?.message || String(error));
-                }
+            try {
+                await loadLocalScript(LOCAL_ENGINE_SOURCE);
+            } catch (error) {
+                throw new Error(
+                    `브라우저 C++ 엔진을 불러오지 못했습니다. GitHub Pages에 엔진 파일이 포함되었는지 확인하세요. ${error.message}`
+                );
             }
 
-            throw new Error(
-                '브라우저 C++ 엔진을 불러오지 못했습니다.\n' +
-                failedSources.join('\n')
-            );
+            if (!window.JSCPP || typeof window.JSCPP.run !== 'function') {
+                throw new Error('JSCPP 파일은 로드되었지만 실행 API(JSCPP.run)를 찾을 수 없습니다.');
+            }
+
+            return window.JSCPP;
         })();
 
         try {
@@ -187,7 +182,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setConsoleHtml(
             '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n' +
             '<span class="text-green-400">' + escapeHtml(prompt) + ' g++ main.cpp -o main -std=c++17</span>\n' +
-            '<span class="text-yellow-400">브라우저 C++ 실행 엔진을 불러오는 중...</span>'
+            '<span class="text-yellow-400">브라우저에 포함된 C++ 실행 엔진을 불러오는 중...</span>'
         );
     };
 
@@ -228,7 +223,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             let html = '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n';
             html += '<span class="text-green-400">' + escapeHtml(prompt) + ' g++ main.cpp -o main -std=c++17</span>\n';
-            html += '<span class="text-slate-500">[browser C++ runtime / JSCPP]</span>\n';
+            html += '<span class="text-slate-500">[browser C++ runtime / JSCPP - local]</span>\n';
 
             if (output) {
                 html += '<span class="text-green-400">' + escapeHtml(output) + '</span>\n';
@@ -242,12 +237,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
             setConsoleHtml(html);
         } catch (error) {
-            const message = error?.message || String(error);
             setConsoleHtml(
                 '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n' +
                 '<span class="text-green-400">' + escapeHtml(prompt) + ' g++ main.cpp -o main -std=c++17</span>\n' +
-                '<span class="text-red-400">브라우저 C++ 실행 오류: ' + escapeHtml(message) + '</span>\n' +
-                '<span class="text-slate-500">JSCPP 공식 배포본을 CDN 순서대로 시도하도록 수정했습니다. 잠시 후 다시 실행해 주세요.</span>'
+                '<span class="text-red-400">브라우저 C++ 실행 오류: ' + escapeHtml(error?.message || String(error)) + '</span>'
             );
         } finally {
             setRunState(false);
@@ -324,6 +317,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // 페이지를 열어두는 동안 엔진을 미리 받아두면 첫 실행이 빨라집니다.
+    // 배포된 사이트에 포함된 로컬 엔진을 백그라운드에서 미리 로드합니다.
     loadCppEngine().catch(() => {});
 });
