@@ -87,12 +87,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const terminalInput = document.getElementById('terminal-input');
     const clearConsoleButton = document.getElementById('clear-console-btn');
 
-    // Wandbox public API
-    // list.json으로 현재 실제 존재하는 C++ 컴파일러를 조회한 뒤 compile.json에 사용합니다.
     const compilerListEndpoint = 'https://wandbox.org/api/list.json';
     const compilerEndpoint = 'https://wandbox.org/api/compile.json';
     let compilerListPromise = null;
     const prompt = 'C:\\CPlusPlus>';
+    const MAX_COMPILE_ATTEMPTS = 3;
+    const RETRY_DELAY_MS = 1200;
 
     const escapeHtml = value => String(value)
         .replaceAll('&', '&amp;')
@@ -128,6 +128,8 @@ document.addEventListener('DOMContentLoaded', () => {
         runButton.classList.toggle('hover:bg-green-500', !running);
     };
 
+    const wait = ms => new Promise(resolve => window.setTimeout(resolve, ms));
+
     const fetchJson = async (url, init = {}) => {
         const controller = new AbortController();
         const timeout = window.setTimeout(() => controller.abort(), 20000);
@@ -149,8 +151,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     detail = text.trim();
                 }
 
-                const suffix = detail ? ` — ${detail.slice(0, 300)}` : '';
-                throw new Error(`HTTP ${response.status}${suffix}`);
+                const suffix = detail ? ` — ${detail.slice(0, 500)}` : '';
+                const error = new Error(`HTTP ${response.status}${suffix}`);
+                error.httpStatus = response.status;
+                error.responseText = text;
+                throw error;
             }
 
             try {
@@ -161,6 +166,12 @@ document.addEventListener('DOMContentLoaded', () => {
         } finally {
             window.clearTimeout(timeout);
         }
+    };
+
+    const isRetryableSandboxError = error => {
+        const message = String(error?.message || '');
+        const raw = String(error?.responseText || '');
+        return error?.httpStatus === 500 && /failed to get uid|status=exit status:\s*125/i.test(`${message} ${raw}`);
     };
 
     const getCppCompiler = async () => {
@@ -175,7 +186,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         throw new Error('현재 Wandbox에서 사용할 수 있는 C++ 컴파일러를 찾지 못했습니다.');
                     }
 
-                    // GCC 계열을 우선하고, 없으면 Clang, 그 다음 첫 C++ 컴파일러를 사용합니다.
                     return compilers.find(item => /gcc|g\+\+/i.test(item.name) && /head/i.test(item.name))
                         || compilers.find(item => /gcc|g\+\+/i.test(item.name))
                         || compilers.find(item => /clang/i.test(item.name))
@@ -213,6 +223,39 @@ document.addEventListener('DOMContentLoaded', () => {
         return null;
     };
 
+    const compileWithRetry = async payload => {
+        let lastError = null;
+
+        for (let attempt = 1; attempt <= MAX_COMPILE_ATTEMPTS; attempt++) {
+            try {
+                return await fetchJson(compilerEndpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+            } catch (error) {
+                lastError = error;
+
+                if (!isRetryableSandboxError(error) || attempt === MAX_COMPILE_ATTEMPTS) {
+                    throw error;
+                }
+
+                setConsoleHtml(
+                    '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n' +
+                    '<span class="text-green-400">C:\\CPlusPlus&gt; g++ main.cpp -o main -std=c++17</span>\n' +
+                    '<span class="text-yellow-400">Wandbox 샌드박스 오류 감지 — 재시도 ' + attempt + '/' + MAX_COMPILE_ATTEMPTS + '...</span>'
+                );
+
+                await wait(RETRY_DELAY_MS * attempt);
+            }
+        }
+
+        throw lastError || new Error('컴파일 요청에 실패했습니다.');
+    };
+
     const runCpp = async () => {
         if (!runButton || !consoleOutput || !codeEditor) return;
 
@@ -242,10 +285,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 stdin
             };
 
-            // C++17 스위치가 실제 목록에 있을 때만 사용합니다.
-            // 지원되지 않는 raw 옵션을 무조건 전송하면 서버가 500을 반환할 수 있습니다.
             const cxx17Option = findCxx17Option(compiler);
-
             if (cxx17Option) {
                 payload.options = cxx17Option;
             } else if (compiler['compiler-option-raw'] === true) {
@@ -258,15 +298,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 '<span class="text-yellow-400">[' + escapeHtml(compiler.display_name || compiler.name) + '] 컴파일 중...</span>'
             );
 
-            const result = await fetchJson(compilerEndpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json'
-                },
-                body: JSON.stringify(payload)
-            });
-
+            const result = await compileWithRetry(payload);
             const compilerMessage = result.compiler_message || '';
             const programMessage = result.program_message || '';
             const programOutput = result.program_output || '';
@@ -301,12 +333,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? '요청 시간이 초과되었습니다. Wandbox 서버가 응답하지 않습니다.'
                 : error?.message || '알 수 없는 오류';
 
-            setConsoleHtml(
-                '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n' +
-                '<span class="text-green-400">C:\\CPlusPlus&gt; g++ main.cpp -o main -std=c++17</span>\n' +
-                '<span class="text-red-400">원격 컴파일러 오류: ' + escapeHtml(message) + '</span>\n' +
-                '<span class="text-slate-500">현재 C++ 컴파일러 목록을 다시 조회하도록 수정되어 있습니다. 잠시 후 다시 실행해 주세요.</span>'
-            );
+            if (isRetryableSandboxError(error)) {
+                setConsoleHtml(
+                    '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n' +
+                    '<span class="text-green-400">C:\\CPlusPlus&gt; g++ main.cpp -o main -std=c++17</span>\n' +
+                    '<span class="text-red-400">Wandbox 서버 일시 장애</span>\n' +
+                    '<span class="text-slate-500">샌드박스 실행 환경을 3회 재시도했지만 서버에서 실행 환경을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.</span>'
+                );
+            } else {
+                setConsoleHtml(
+                    '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n' +
+                    '<span class="text-green-400">C:\\CPlusPlus&gt; g++ main.cpp -o main -std=c++17</span>\n' +
+                    '<span class="text-red-400">원격 컴파일러 오류: ' + escapeHtml(message) + '</span>\n' +
+                    '<span class="text-slate-500">Wandbox 연결 또는 컴파일러 설정을 확인해 주세요.</span>'
+                );
+            }
         } finally {
             setRunState(false);
         }
@@ -328,7 +369,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (!command) return;
             const normalized = command.toLowerCase();
-
             appendConsole(`${prompt} ${command}`, 'text-green-400');
 
             if (normalized === 'cls' || normalized === 'clear') {
