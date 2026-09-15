@@ -24,6 +24,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Download browser C++ engine
+        run: |
+          mkdir -p vendor
+          curl -fL --retry 3 --retry-all-errors \
+            https://raw.githubusercontent.com/felixhao28/JSCPP/gh-pages/dist/JSCPP.es5.min.js \
+            -o vendor/JSCPP.es5.min.js
+          test -s vendor/JSCPP.es5.min.js
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
