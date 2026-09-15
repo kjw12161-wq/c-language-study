@@ -79,7 +79,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // 실제 C++17 컴파일/실행: Wandbox의 격리된 원격 컴파일러를 사용합니다.
     const runButton = document.getElementById('run-btn');
     const consoleOutput = document.getElementById('console-output');
     const codeEditor = document.getElementById('code-editor');
@@ -87,7 +86,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const terminalForm = document.getElementById('terminal-form');
     const terminalInput = document.getElementById('terminal-input');
     const clearConsoleButton = document.getElementById('clear-console-btn');
+
+    // Wandbox public API
+    // list.json으로 현재 실제 존재하는 C++ 컴파일러를 조회한 뒤 compile.json에 사용합니다.
+    const compilerListEndpoint = 'https://wandbox.org/api/list.json';
     const compilerEndpoint = 'https://wandbox.org/api/compile.json';
+    let compilerListPromise = null;
     const prompt = 'C:\\CPlusPlus>';
 
     const escapeHtml = value => String(value)
@@ -98,11 +102,13 @@ document.addEventListener('DOMContentLoaded', () => {
         .replaceAll("'", '&#039;');
 
     const setConsoleHtml = html => {
+        if (!consoleOutput) return;
         consoleOutput.innerHTML = html;
         consoleOutput.scrollTop = consoleOutput.scrollHeight;
     };
 
     const appendConsole = (text, className = '') => {
+        if (!consoleOutput) return;
         const line = document.createElement('div');
         line.className = className;
         line.textContent = text;
@@ -111,6 +117,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const setRunState = running => {
+        if (!runButton) return;
         runButton.disabled = running;
         runButton.innerHTML = running
             ? '<i class="fa-solid fa-spinner fa-spin"></i> 컴파일 중...'
@@ -121,6 +128,91 @@ document.addEventListener('DOMContentLoaded', () => {
         runButton.classList.toggle('hover:bg-green-500', !running);
     };
 
+    const fetchJson = async (url, init = {}) => {
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 20000);
+
+        try {
+            const response = await fetch(url, {
+                ...init,
+                signal: controller.signal,
+                cache: 'no-store'
+            });
+            const text = await response.text();
+
+            if (!response.ok) {
+                let detail = '';
+                try {
+                    const parsed = JSON.parse(text);
+                    detail = parsed.message || parsed.error || parsed.compiler_message || '';
+                } catch (_) {
+                    detail = text.trim();
+                }
+
+                const suffix = detail ? ` — ${detail.slice(0, 300)}` : '';
+                throw new Error(`HTTP ${response.status}${suffix}`);
+            }
+
+            try {
+                return JSON.parse(text);
+            } catch (_) {
+                throw new Error('Wandbox가 올바른 JSON 응답을 반환하지 않았습니다.');
+            }
+        } finally {
+            window.clearTimeout(timeout);
+        }
+    };
+
+    const getCppCompiler = async () => {
+        if (!compilerListPromise) {
+            compilerListPromise = fetchJson(compilerListEndpoint)
+                .then(list => {
+                    const compilers = Array.isArray(list)
+                        ? list.filter(item => String(item?.language || '').toLowerCase() === 'c++' && item?.name)
+                        : [];
+
+                    if (!compilers.length) {
+                        throw new Error('현재 Wandbox에서 사용할 수 있는 C++ 컴파일러를 찾지 못했습니다.');
+                    }
+
+                    // GCC 계열을 우선하고, 없으면 Clang, 그 다음 첫 C++ 컴파일러를 사용합니다.
+                    return compilers.find(item => /gcc|g\+\+/i.test(item.name) && /head/i.test(item.name))
+                        || compilers.find(item => /gcc|g\+\+/i.test(item.name))
+                        || compilers.find(item => /clang/i.test(item.name))
+                        || compilers[0];
+                })
+                .catch(error => {
+                    compilerListPromise = null;
+                    throw error;
+                });
+        }
+
+        return compilerListPromise;
+    };
+
+    const findCxx17Option = compiler => {
+        const switches = Array.isArray(compiler?.switches) ? compiler.switches : [];
+
+        for (const group of switches) {
+            const options = Array.isArray(group?.options) ? group.options : [];
+            for (const option of options) {
+                const text = [
+                    option?.name,
+                    option?.['display-name'],
+                    option?.display_name,
+                    option?.['display-flags'],
+                    option?.display_flags
+                ].filter(Boolean).join(' ');
+
+                if (/c\+\+17|gnu\+\+17/i.test(text)) {
+                    return option?.name || null;
+                }
+            }
+        }
+
+        return null;
+    };
+
     const runCpp = async () => {
         if (!runButton || !consoleOutput || !codeEditor) return;
 
@@ -128,7 +220,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const stdin = stdinEditor?.value || '';
 
         if (!code) {
-            setConsoleHtml('<span class="text-red-400">C:\\CPlusPlus&gt; g++ main.cpp -o main -std=c++17</span>\n<span class="text-red-400">error: main.cpp가 비어 있습니다.</span>');
+            setConsoleHtml(
+                '<span class="text-red-400">C:\\CPlusPlus&gt; g++ main.cpp -o main -std=c++17</span>\n' +
+                '<span class="text-red-400">error: main.cpp가 비어 있습니다.</span>'
+            );
             return;
         }
 
@@ -136,26 +231,45 @@ document.addEventListener('DOMContentLoaded', () => {
         setConsoleHtml(
             '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n' +
             '<span class="text-green-400">C:\\CPlusPlus&gt; g++ main.cpp -o main -std=c++17</span>\n' +
-            '<span class="text-yellow-400">Compiling...</span>'
+            '<span class="text-yellow-400">Wandbox 컴파일러 확인 중...</span>'
         );
 
         try {
-            const response = await fetch(compilerEndpoint, {
+            const compiler = await getCppCompiler();
+            const payload = {
+                compiler: compiler.name,
+                code,
+                stdin
+            };
+
+            // C++17 스위치가 실제 목록에 있을 때만 사용합니다.
+            // 지원되지 않는 raw 옵션을 무조건 전송하면 서버가 500을 반환할 수 있습니다.
+            const cxx17Option = findCxx17Option(compiler);
+
+            if (cxx17Option) {
+                payload.options = cxx17Option;
+            } else if (compiler['compiler-option-raw'] === true) {
+                payload['compiler-option-raw'] = '-std=c++17';
+            }
+
+            setConsoleHtml(
+                '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n' +
+                '<span class="text-green-400">C:\\CPlusPlus&gt; g++ main.cpp -o main -std=c++17</span>\n' +
+                '<span class="text-yellow-400">[' + escapeHtml(compiler.display_name || compiler.name) + '] 컴파일 중...</span>'
+            );
+
+            const result = await fetchJson(compilerEndpoint, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    compiler: 'gcc-head',
-                    code,
-                    stdin,
-                    'compiler-option-raw': '-std=c++17'
-                })
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify(payload)
             });
 
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-            const result = await response.json();
             const compilerMessage = result.compiler_message || '';
             const programMessage = result.program_message || '';
+            const programOutput = result.program_output || '';
             const status = result.status;
             const signal = result.signal;
 
@@ -165,8 +279,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (compilerMessage) {
                 html += '<span class="text-red-400">' + escapeHtml(compilerMessage) + '</span>\n';
             }
-            if (programMessage) {
-                html += '<span class="text-green-400">' + escapeHtml(programMessage) + '</span>\n';
+
+            const output = programOutput || programMessage;
+            if (output) {
+                html += '<span class="text-green-400">' + escapeHtml(output) + '</span>\n';
+            }
+
+            if (!compilerMessage && !output) {
+                html += '<span class="text-slate-400">[출력 없음]</span>\n';
             }
 
             if (status !== undefined && status !== null) {
@@ -175,56 +295,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 html += '</span>';
             }
 
-            setConsoleHtml(html || '<span class="text-slate-400">[실행 결과 없음]</span>');
+            setConsoleHtml(html);
         } catch (error) {
+            const message = error?.name === 'AbortError'
+                ? '요청 시간이 초과되었습니다. Wandbox 서버가 응답하지 않습니다.'
+                : error?.message || '알 수 없는 오류';
+
             setConsoleHtml(
                 '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n' +
                 '<span class="text-green-400">C:\\CPlusPlus&gt; g++ main.cpp -o main -std=c++17</span>\n' +
-                '<span class="text-red-400">원격 컴파일러에 연결하지 못했습니다: ' + escapeHtml(error.message) + '</span>\n' +
-                '<span class="text-slate-500">인터넷 연결 또는 Wandbox API 상태를 확인하세요.</span>'
+                '<span class="text-red-400">원격 컴파일러 오류: ' + escapeHtml(message) + '</span>\n' +
+                '<span class="text-slate-500">현재 C++ 컴파일러 목록을 다시 조회하도록 수정되어 있습니다. 잠시 후 다시 실행해 주세요.</span>'
             );
         } finally {
             setRunState(false);
-            terminalInput?.focus();
         }
-    };
-
-    const executeTerminalCommand = command => {
-        const normalized = command.trim().toLowerCase();
-        if (!normalized) return;
-
-        appendConsole(`${prompt} ${command}`, 'text-green-400');
-
-        if (normalized === 'cls' || normalized === 'clear') {
-            setConsoleHtml('<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>');
-            return;
-        }
-
-        if (normalized === 'help') {
-            appendConsole('사용 가능한 명령어:', 'text-slate-300');
-            appendConsole('  run                         현재 main.cpp를 실제 C++17로 컴파일하고 실행');
-            appendConsole('  g++ main.cpp -o main         현재 파일을 컴파일');
-            appendConsole('  main                        컴파일 후 프로그램 실행');
-            appendConsole('  cls / clear                 CMD 화면 지우기');
-            appendConsole('  echo [문장]                 문장 출력');
-            appendConsole('  help                        명령어 목록');
-            return;
-        }
-
-        if (normalized === 'run' || normalized === 'main' ||
-            normalized === 'g++ main.cpp -o main' ||
-            normalized === 'g++ main.cpp -o main -std=c++17') {
-            runCpp();
-            return;
-        }
-
-        if (normalized.startsWith('echo ')) {
-            appendConsole(command.slice(5));
-            return;
-        }
-
-        appendConsole(`'${command}'은(는) 이 교육용 CMD에서 인식되지 않는 명령입니다.`, 'text-red-400');
-        appendConsole('help를 입력하면 사용할 수 있는 명령을 확인할 수 있습니다.', 'text-slate-500');
     };
 
     if (runButton) runButton.addEventListener('click', runCpp);
@@ -232,16 +317,34 @@ document.addEventListener('DOMContentLoaded', () => {
     if (clearConsoleButton && consoleOutput) {
         clearConsoleButton.addEventListener('click', () => {
             setConsoleHtml('<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>');
-            terminalInput?.focus();
         });
     }
 
     if (terminalForm && terminalInput) {
         terminalForm.addEventListener('submit', event => {
             event.preventDefault();
-            const command = terminalInput.value;
+            const command = terminalInput.value.trim();
             terminalInput.value = '';
-            executeTerminalCommand(command);
+
+            if (!command) return;
+            const normalized = command.toLowerCase();
+
+            appendConsole(`${prompt} ${command}`, 'text-green-400');
+
+            if (normalized === 'cls' || normalized === 'clear') {
+                setConsoleHtml('<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>');
+            } else if (normalized === 'help') {
+                appendConsole('run / main / g++ main.cpp -o main -std=c++17 : C++ 실행');
+                appendConsole('cls / clear : 콘솔 지우기');
+                appendConsole('echo [문장] : 문장 출력');
+                appendConsole('help : 명령어 목록');
+            } else if (normalized === 'run' || normalized === 'main' || normalized === 'g++ main.cpp -o main' || normalized === 'g++ main.cpp -o main -std=c++17') {
+                runCpp();
+            } else if (normalized.startsWith('echo ')) {
+                appendConsole(command.slice(5));
+            } else {
+                appendConsole(`'${command}'은(는) 이 교육용 CMD에서 인식되지 않는 명령입니다.`, 'text-red-400');
+            }
         });
     }
 
@@ -249,6 +352,7 @@ document.addEventListener('DOMContentLoaded', () => {
         codeEditor.addEventListener('keydown', event => {
             if (event.key !== 'Tab') return;
             event.preventDefault();
+
             const start = codeEditor.selectionStart;
             const end = codeEditor.selectionEnd;
             codeEditor.value = codeEditor.value.substring(0, start) + '    ' + codeEditor.value.substring(end);
