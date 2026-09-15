@@ -88,10 +88,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const clearConsoleButton = document.getElementById('clear-console-btn');
 
     const prompt = 'C:\\CPlusPlus>';
+
+    // JSCPP는 브라우저에서 C++를 실행하는 JavaScript 인터프리터입니다.
+    // CDN 하나가 막혀도 다음 CDN으로 자동 전환하도록 구성합니다.
     const JSCPP_SOURCES = [
+        'https://unpkg.com/JSCPP@2.0.9/dist/JSCPP.es5.min.js',
         'https://cdn.jsdelivr.net/npm/JSCPP@2.0.9/dist/JSCPP.es5.min.js',
         'https://raw.githubusercontent.com/felixhao28/JSCPP/gh-pages/dist/JSCPP.es5.min.js'
     ];
+
     let enginePromise = null;
 
     const setConsoleHtml = html => {
@@ -131,7 +136,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const loadScript = src => new Promise((resolve, reject) => {
         const script = document.createElement('script');
         script.src = src;
-        script.async = true;
+        // 순서를 보장해 CDN fallback이 안정적으로 동작하게 합니다.
+        script.async = false;
+        script.defer = false;
         script.onload = () => resolve();
         script.onerror = () => reject(new Error(`엔진 파일 로드 실패: ${src}`));
         document.head.appendChild(script);
@@ -142,7 +149,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (enginePromise) return enginePromise;
 
         enginePromise = (async () => {
-            let lastError = null;
+            const failedSources = [];
 
             for (const source of JSCPP_SOURCES) {
                 try {
@@ -150,18 +157,25 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (window.JSCPP && typeof window.JSCPP.run === 'function') {
                         return window.JSCPP;
                     }
+                    failedSources.push(`${source} (JSCPP 전역 객체 없음)`);
                 } catch (error) {
-                    lastError = error;
+                    failedSources.push(error?.message || String(error));
                 }
             }
 
-            throw lastError || new Error('JSCPP 실행 엔진을 찾을 수 없습니다.');
+            throw new Error(
+                '브라우저 C++ 엔진을 불러오지 못했습니다.\n' +
+                failedSources.join('\n')
+            );
         })();
 
         try {
             return await Promise.race([
                 enginePromise,
-                new Promise((_, reject) => window.setTimeout(() => reject(new Error('브라우저 C++ 실행 엔진 로드 시간이 초과되었습니다.')), 15000))
+                new Promise((_, reject) => window.setTimeout(
+                    () => reject(new Error('브라우저 C++ 실행 엔진 로드 시간이 초과되었습니다.')),
+                    15000
+                ))
             ]);
         } catch (error) {
             enginePromise = null;
@@ -228,11 +242,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             setConsoleHtml(html);
         } catch (error) {
+            const message = error?.message || String(error);
             setConsoleHtml(
                 '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n' +
                 '<span class="text-green-400">' + escapeHtml(prompt) + ' g++ main.cpp -o main -std=c++17</span>\n' +
-                '<span class="text-red-400">브라우저 C++ 실행 오류: ' + escapeHtml(error?.message || String(error)) + '</span>\n' +
-                '<span class="text-slate-500">JSCPP를 불러올 수 없으면 인터넷 연결 또는 CDN 접근을 확인해 주세요.</span>'
+                '<span class="text-red-400">브라우저 C++ 실행 오류: ' + escapeHtml(message) + '</span>\n' +
+                '<span class="text-slate-500">JSCPP 공식 배포본을 CDN 순서대로 시도하도록 수정했습니다. 잠시 후 다시 실행해 주세요.</span>'
             );
         } finally {
             setRunState(false);
@@ -309,6 +324,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // 백그라운드에서 미리 엔진을 로드합니다. 실패해도 페이지의 나머지 기능은 정상 작동합니다.
+    // 페이지를 열어두는 동안 엔진을 미리 받아두면 첫 실행이 빨라집니다.
     loadCppEngine().catch(() => {});
 });
