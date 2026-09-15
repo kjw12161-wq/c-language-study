@@ -88,6 +88,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const clearConsoleButton = document.getElementById('clear-console-btn');
 
     const prompt = 'C:\\CPlusPlus>';
+    const JSCPP_SOURCES = [
+        'https://cdn.jsdelivr.net/npm/JSCPP@2.0.9/dist/JSCPP.es5.min.js',
+        'https://raw.githubusercontent.com/felixhao28/JSCPP/gh-pages/dist/JSCPP.es5.min.js'
+    ];
+    let enginePromise = null;
 
     const setConsoleHtml = html => {
         if (!consoleOutput) return;
@@ -123,7 +128,56 @@ document.addEventListener('DOMContentLoaded', () => {
         runButton.classList.toggle('hover:bg-green-500', !running);
     };
 
-    const runCppLocally = () => {
+    const loadScript = src => new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = src;
+        script.async = true;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error(`엔진 파일 로드 실패: ${src}`));
+        document.head.appendChild(script);
+    });
+
+    const loadCppEngine = async () => {
+        if (window.JSCPP && typeof window.JSCPP.run === 'function') return window.JSCPP;
+        if (enginePromise) return enginePromise;
+
+        enginePromise = (async () => {
+            let lastError = null;
+
+            for (const source of JSCPP_SOURCES) {
+                try {
+                    await loadScript(source);
+                    if (window.JSCPP && typeof window.JSCPP.run === 'function') {
+                        return window.JSCPP;
+                    }
+                } catch (error) {
+                    lastError = error;
+                }
+            }
+
+            throw lastError || new Error('JSCPP 실행 엔진을 찾을 수 없습니다.');
+        })();
+
+        try {
+            return await Promise.race([
+                enginePromise,
+                new Promise((_, reject) => window.setTimeout(() => reject(new Error('브라우저 C++ 실행 엔진 로드 시간이 초과되었습니다.')), 15000))
+            ]);
+        } catch (error) {
+            enginePromise = null;
+            throw error;
+        }
+    };
+
+    const showEngineLoading = () => {
+        setConsoleHtml(
+            '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n' +
+            '<span class="text-green-400">' + escapeHtml(prompt) + ' g++ main.cpp -o main -std=c++17</span>\n' +
+            '<span class="text-yellow-400">브라우저 C++ 실행 엔진을 불러오는 중...</span>'
+        );
+    };
+
+    const runCppLocally = async () => {
         if (!runButton || !consoleOutput || !codeEditor) return;
 
         const code = codeEditor.value.trim();
@@ -131,32 +185,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (!code) {
             setConsoleHtml(
-                '<span class="text-red-400">C:\\CPlusPlus&gt; g++ main.cpp -o main -std=c++17</span>\n' +
+                '<span class="text-red-400">' + escapeHtml(prompt) + ' g++ main.cpp -o main -std=c++17</span>\n' +
                 '<span class="text-red-400">error: main.cpp가 비어 있습니다.</span>'
             );
             return;
         }
 
-        if (typeof window.JSCPP === 'undefined' || typeof window.JSCPP.run !== 'function') {
-            setConsoleHtml(
-                '<span class="text-red-400">C:\\CPlusPlus&gt; g++ main.cpp -o main -std=c++17</span>\n' +
-                '<span class="text-red-400">브라우저 C++ 실행 엔진을 불러오지 못했습니다.</span>\n' +
-                '<span class="text-slate-500">페이지를 새로고침한 뒤 다시 시도해 주세요.</span>'
-            );
-            return;
-        }
-
         setRunState(true);
-        setConsoleHtml(
-            '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n' +
-            '<span class="text-green-400">' + escapeHtml(prompt) + ' g++ main.cpp -o main -std=c++17</span>\n' +
-            '<span class="text-yellow-400">브라우저 내부 C++ 실행 중...</span>'
-        );
-
-        let output = '';
+        showEngineLoading();
 
         try {
-            const result = window.JSCPP.run(code, stdin, {
+            const JSCPP = await loadCppEngine();
+            let output = '';
+
+            setConsoleHtml(
+                '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n' +
+                '<span class="text-green-400">' + escapeHtml(prompt) + ' g++ main.cpp -o main -std=c++17</span>\n' +
+                '<span class="text-yellow-400">브라우저 내부 C++ 실행 중...</span>'
+            );
+
+            const exitCode = JSCPP.run(code, stdin, {
                 stdio: {
                     write: text => {
                         output += String(text);
@@ -166,7 +214,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             let html = '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n';
             html += '<span class="text-green-400">' + escapeHtml(prompt) + ' g++ main.cpp -o main -std=c++17</span>\n';
-            html += '<span class="text-slate-500">[browser C++ runtime]</span>\n';
+            html += '<span class="text-slate-500">[browser C++ runtime / JSCPP]</span>\n';
 
             if (output) {
                 html += '<span class="text-green-400">' + escapeHtml(output) + '</span>\n';
@@ -174,18 +222,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 html += '<span class="text-slate-400">[출력 없음]</span>\n';
             }
 
-            if (result !== undefined && result !== null) {
-                html += '\n<span class="text-slate-500">Program exited with code ' + escapeHtml(String(result)) + '</span>';
+            if (exitCode !== undefined && exitCode !== null) {
+                html += '\n<span class="text-slate-500">Program exited with code ' + escapeHtml(String(exitCode)) + '</span>';
             }
 
             setConsoleHtml(html);
         } catch (error) {
-            const message = error?.message || String(error);
             setConsoleHtml(
                 '<span class="text-slate-400">Microsoft Windows [Version 10.0]</span>\n' +
                 '<span class="text-green-400">' + escapeHtml(prompt) + ' g++ main.cpp -o main -std=c++17</span>\n' +
-                '<span class="text-red-400">C++ 실행 오류: ' + escapeHtml(message) + '</span>\n' +
-                '<span class="text-slate-500">현재 브라우저 실행기는 교육용 C++ 문법을 중심으로 지원합니다.</span>'
+                '<span class="text-red-400">브라우저 C++ 실행 오류: ' + escapeHtml(error?.message || String(error)) + '</span>\n' +
+                '<span class="text-slate-500">JSCPP를 불러올 수 없으면 인터넷 연결 또는 CDN 접근을 확인해 주세요.</span>'
             );
         } finally {
             setRunState(false);
@@ -207,12 +254,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (normalized === 'help') {
             appendConsole('사용 가능한 명령어:', 'text-slate-300');
-            appendConsole('  run                       현재 main.cpp 실행');
-            appendConsole('  g++ main.cpp -o main      C++ 프로그램 실행');
-            appendConsole('  main                      현재 main.cpp 실행');
-            appendConsole('  cls / clear               화면 지우기');
-            appendConsole('  echo [문장]               문장 출력');
-            appendConsole('  help                      명령어 목록');
+            appendConsole('  run                         현재 main.cpp 실행');
+            appendConsole('  g++ main.cpp -o main        C++ 프로그램 실행');
+            appendConsole('  main                        현재 main.cpp 실행');
+            appendConsole('  cls / clear                 화면 지우기');
+            appendConsole('  echo [문장]                 문장 출력');
+            appendConsole('  help                        명령어 목록');
             return;
         }
 
@@ -232,9 +279,7 @@ document.addEventListener('DOMContentLoaded', () => {
         appendConsole('help를 입력하면 사용할 수 있는 명령을 확인할 수 있습니다.', 'text-slate-500');
     };
 
-    if (runButton) {
-        runButton.addEventListener('click', runCppLocally);
-    }
+    if (runButton) runButton.addEventListener('click', runCppLocally);
 
     if (clearConsoleButton && consoleOutput) {
         clearConsoleButton.addEventListener('click', () => {
@@ -263,4 +308,7 @@ document.addEventListener('DOMContentLoaded', () => {
             codeEditor.selectionStart = codeEditor.selectionEnd = start + 4;
         });
     }
+
+    // 백그라운드에서 미리 엔진을 로드합니다. 실패해도 페이지의 나머지 기능은 정상 작동합니다.
+    loadCppEngine().catch(() => {});
 });
