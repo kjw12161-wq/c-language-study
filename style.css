@@ -1,22 +1,97 @@
-html { scroll-behavior: smooth; }
+/* ===== C++ Master Class Theme ===== */
+:root {
+    --cpp-blue: #00599C;
+    --cpp-dark: #004482;
+    --cpp-light: #659ad2;
+    --page-bg: #f8fafc;
+    --text-dark: #0f172a;
+}
 
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    background: var(--page-bg);
+}
+
+/* Tailwind custom-color fallbacks.
+   These keep the C++ blue theme visible even when the CDN configuration
+   is slow to initialize or unavailable. */
+.bg-cpp-blue {
+    background-color: var(--cpp-blue) !important;
+}
+
+.bg-cpp-dark {
+    background-color: var(--cpp-dark) !important;
+}
+
+.text-cpp-blue {
+    color: var(--cpp-blue) !important;
+}
+
+.text-cpp-dark {
+    color: var(--cpp-dark) !important;
+}
+
+.text-cpp-light {
+    color: var(--cpp-light) !important;
+}
+
+.border-cpp-blue {
+    border-color: var(--cpp-blue) !important;
+}
+
+/* Header */
+header.bg-cpp-blue {
+    background: var(--cpp-blue) !important;
+    box-shadow: 0 2px 10px rgba(0, 68, 130, 0.22);
+}
+
+/* Hero: strong C++ blue gradient like the reference design */
+#intro {
+    background: linear-gradient(180deg, #00599C 0%, #004482 100%) !important;
+    color: #fff;
+}
+
+#intro h1,
+#intro p {
+    color: #fff;
+}
+
+#intro p {
+    color: rgba(255, 255, 255, 0.78);
+}
+
+/* Primary hero button */
+#intro a.bg-white:hover {
+    background-color: #f1f5f9 !important;
+}
+
+/* Section numbering / accents */
+.bg-cpp-blue.rounded-lg {
+    background: var(--cpp-blue) !important;
+}
+
+/* Scrollbar */
 ::-webkit-scrollbar {
     width: 8px;
 }
 
 ::-webkit-scrollbar-track {
-    background: #f1f1f1;
+    background: #e5e7eb;
 }
 
 ::-webkit-scrollbar-thumb {
-    background: #00599C;
+    background: var(--cpp-blue);
     border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: #004482;
+    background: var(--cpp-dark);
 }
 
+/* Code blocks */
 .code-block {
     background-color: #1e1e1e;
     color: #d4d4d4;
@@ -78,4 +153,15 @@ html { scroll-behavior: smooth; }
 
 .prose-section strong {
     color: #0f172a;
+}
+
+/* Small-screen adjustments */
+@media (max-width: 767px) {
+    #intro {
+        background: linear-gradient(180deg, #00599C 0%, #004482 100%) !important;
+    }
+
+    #intro h1 {
+        line-height: 1.15;
+    }
 }
